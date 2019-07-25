@@ -31,7 +31,7 @@ const wrapperTemplateMap = {
 }
 
 export default class ServerlessChrome {
-  constructor (serverless, options) {
+  constructor(serverless, options) {
     this.serverless = serverless
     this.options = options
 
@@ -45,13 +45,23 @@ export default class ServerlessChrome {
     throwIfWrongPluginOrder(plugins)
 
     this.hooks = {
-      'before:offline:start:init': this.beforeCreateDeploymentArtifacts.bind(this),
-      'before:package:createDeploymentArtifacts': this.beforeCreateDeploymentArtifacts.bind(this),
-      'after:package:createDeploymentArtifacts': this.afterCreateDeploymentArtifacts.bind(this),
-      'before:invoke:local:invoke': this.beforeCreateDeploymentArtifacts.bind(this),
+      'before:offline:start:init': this.beforeCreateDeploymentArtifacts.bind(
+        this
+      ),
+      'before:package:createDeploymentArtifacts': this.beforeCreateDeploymentArtifacts.bind(
+        this
+      ),
+      'after:package:createDeploymentArtifacts': this.afterCreateDeploymentArtifacts.bind(
+        this
+      ),
+      'before:invoke:local:invoke': this.beforeCreateDeploymentArtifacts.bind(
+        this
+      ),
       'after:invoke:local:invoke': this.cleanup.bind(this),
 
-      'before:webpack:package:packExternalModules': this.webpackPackageBinaries.bind(this),
+      'before:webpack:package:packExternalModules': this.webpackPackageBinaries.bind(
+        this
+      ),
     }
 
     // only mess with the service path if we're not already known to be within a .build folder
@@ -61,19 +71,46 @@ export default class ServerlessChrome {
     this.webpack = plugins.includes('serverless-webpack')
   }
 
-  async webpackPackageBinaries () {
-    const { servicePath } = this.serverless.config
+  async webpackPackageBinaries() {
+    const {
+      config: { servicePath },
+      service,
+    } = this.serverless
+    const packagedIdividually = service.package && service.package.individually
 
-    await fs.copy(
-      path.join(
-        servicePath,
-        'node_modules/@serverless-chrome/lambda/dist/headless-chromium'
-      ),
-      path.resolve(servicePath, '.webpack/service/headless-chromium')
-    )
+    if (packagedIdividually) {
+      const functionsToCopyTo =
+        (service.custom &&
+          service.custom.chrome &&
+          service.custom.chrome.functions) ||
+        service.getAllFunctions()
+
+      await Promise.all(
+        functionsToCopyTo.map(async functionName => {
+          await fs.copy(
+            path.join(
+              servicePath,
+              'node_modules/@serverless-chrome/lambda/dist/headless-chromium'
+            ),
+            path.resolve(
+              servicePath,
+              `.webpack/${functionName}/headless-chromium`
+            )
+          )
+        })
+      )
+    } else {
+      await fs.copy(
+        path.join(
+          servicePath,
+          'node_modules/@serverless-chrome/lambda/dist/headless-chromium'
+        ),
+        path.resolve(servicePath, '.webpack/service/headless-chromium')
+      )
+    }
   }
 
-  async beforeCreateDeploymentArtifacts () {
+  async beforeCreateDeploymentArtifacts() {
     const {
       config,
       cli,
@@ -124,9 +161,13 @@ export default class ServerlessChrome {
         }
       )
 
-      files.forEach((filename) => {
-        const sourceFile = path.resolve(path.join(this.originalServicePath, filename))
-        const destFileName = path.resolve(path.join(config.servicePath, filename))
+      files.forEach(filename => {
+        const sourceFile = path.resolve(
+          path.join(this.originalServicePath, filename)
+        )
+        const destFileName = path.resolve(
+          path.join(config.servicePath, filename)
+        )
 
         const dirname = path.dirname(destFileName)
 
@@ -143,54 +184,60 @@ export default class ServerlessChrome {
     // Add our node_modules dependencies to the package includes
     service.package.include = [...service.package.include, ...INCLUDES]
 
-    await Promise.all(functionsToWrap.map(async (functionName) => {
-      const { handler } = service.getFunction(functionName)
-      const { filePath, fileName, exportName } = getHandlerFileAndExportName(handler)
-      const handlerCodePath = path.join(config.servicePath, filePath)
+    await Promise.all(
+      functionsToWrap.map(async functionName => {
+        const { handler } = service.getFunction(functionName)
+        const { filePath, fileName, exportName } = getHandlerFileAndExportName(
+          handler
+        )
+        const handlerCodePath = path.join(config.servicePath, filePath)
 
-      const originalFileRenamed = `${utils.generateShortId()}___${fileName}`
+        const originalFileRenamed = `${utils.generateShortId()}___${fileName}`
 
-      const customPluginOptions =
+        const customPluginOptions =
           (service.custom && service.custom.chrome) || {}
 
-      const launcherOptions = {
-        ...customPluginOptions,
-        flags: customPluginOptions.flags || [],
-        chromePath: this.webpack ? '/var/task/headless-chromium' : undefined,
-      }
+        const launcherOptions = {
+          ...customPluginOptions,
+          flags: customPluginOptions.flags || [],
+          chromePath: this.webpack ? '/var/task/headless-chromium' : undefined,
+        }
 
-      // Read in the wrapper handler code template
-      const wrapperTemplate = await utils.readFile(path.resolve(
-        __dirname,
-        '..',
-        'src',
-        wrapperTemplateMap[`${providerName}-${runtime}`]
-      ))
-
-      // Include the original handler via require
-      const wrapperCode = wrapperTemplate
-        .replace(
-          "'REPLACE_WITH_HANDLER_REQUIRE'",
-          `require('./${originalFileRenamed}')`
+        // Read in the wrapper handler code template
+        const wrapperTemplate = await utils.readFile(
+          path.resolve(
+            __dirname,
+            '..',
+            'src',
+            wrapperTemplateMap[`${providerName}-${runtime}`]
+          )
         )
-        .replace("'REPLACE_WITH_OPTIONS'", JSON.stringify(launcherOptions))
-        .replace(/REPLACE_WITH_EXPORT_NAME/gm, exportName)
+
+        // Include the original handler via require
+        const wrapperCode = wrapperTemplate
+          .replace(
+            "'REPLACE_WITH_HANDLER_REQUIRE'",
+            `require('./${originalFileRenamed}')`
+          )
+          .replace("'REPLACE_WITH_OPTIONS'", JSON.stringify(launcherOptions))
+          .replace(/REPLACE_WITH_EXPORT_NAME/gm, exportName)
 
         // Move the original handler's file aside
-      await fs.move(
-        path.resolve(handlerCodePath, fileName),
-        path.resolve(handlerCodePath, originalFileRenamed)
-      )
+        await fs.move(
+          path.resolve(handlerCodePath, fileName),
+          path.resolve(handlerCodePath, originalFileRenamed)
+        )
 
-      // Write the wrapper code to the function's handler path
-      await utils.writeFile(
-        path.resolve(handlerCodePath, fileName),
-        wrapperCode
-      )
-    }))
+        // Write the wrapper code to the function's handler path
+        await utils.writeFile(
+          path.resolve(handlerCodePath, fileName),
+          wrapperCode
+        )
+      })
+    )
   }
 
-  async afterCreateDeploymentArtifacts () {
+  async afterCreateDeploymentArtifacts() {
     if (this.messWithServicePath) {
       // Copy .build to .serverless
       await fs.copy(
@@ -209,7 +256,7 @@ export default class ServerlessChrome {
     }
   }
 
-  async cleanup () {
+  async cleanup() {
     // Restore service path
     this.serverless.config.servicePath = this.originalServicePath
 
